@@ -1,242 +1,69 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
-	"strings"
-	"sync"
 
-	"github.com/blang/semver"
+	shellwords "github.com/mattn/go-shellwords"
 )
 
-// GREEN 緑色の制御文字
-const GREEN = "\033[92m"
+var logger = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile)
 
-// YELLOW 黄色の制御文字
-const YELLOW = "\033[93m"
-
-// RED 赤色の制御文字
-const RED = "\033[91m"
-
-// ENDC 制御文字の終端
-const ENDC = "\033[0m"
-
-func printOK(msg string) {
-	fmt.Printf("%s%s%s\n", GREEN, msg, ENDC)
+func init() {
+	logger.Printf("NumCPU=%d\n", runtime.NumCPU())
+	runtime.GOMAXPROCS(runtime.NumCPU())
 }
 
-func printInfo(msg string) {
-	fmt.Printf("%s%s%s\n", YELLOW, msg, ENDC)
-}
+func runCmdStr(cmdstr string) error {
+	logger.Println(cmdstr)
+	c, err := shellwords.Parse(cmdstr)
+	if err != nil {
+		return err
+	}
 
-func printNG(msg string) {
-	fmt.Printf("%s%s%s\n", RED, msg, ENDC)
-}
-
-type Info struct {
-	Name                    string
-	LatestVersion           string
-	LocalInstalledDirs      []string
-	LocalLatestInstalledDir string
-	LocalLatestVersion      string
+	var out = []byte{}
+	switch len(c) {
+	case 0:
+		return nil
+	case 1:
+		out, err = exec.Command(c[0]).Output()
+	default:
+		out, err = exec.Command(c[0], c[1:]...).Output()
+	}
+	logger.Printf("%s\n", out)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func main() {
-	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmicroseconds|log.Lshortfile)
-
-	fmt.Printf("NumCPU=%d\n", runtime.NumCPU())
-	runtime.GOMAXPROCS(runtime.NumCPU())
-
-	fmt.Println("=== START brew cask upgrade task ===")
-	out, err := exec.Command("brew", "cask", "list").Output()
+	logger.Println("=== START brew cask upgrade task ===")
+	err := runCmdStr("brew update")
 	if err != nil {
-		printNG(err.Error())
-		return
+		logger.Fatal(err.Error())
 	}
-
-	caskListStr := string(out)
-	printOK(caskListStr)
-	caskListArr := strings.Split(caskListStr, "\n")
-
-	var wg sync.WaitGroup
-	ch := make(chan string, 1)
-	retInfo := make(chan Info, len(caskListArr))
-
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go func() {
-			for {
-				s, ok := <-ch
-				//;fmt.Println(ok)
-				//fmt.Println(s)
-				if !ok {
-					break
-				}
-				out, err := exec.Command("brew", "cask", "info", s).Output()
-				log.Println(string(out))
-				if err != nil {
-					printNG(err.Error())
-					wg.Done()
-					return
-				}
-
-				lines := strings.Split(string(out), "\n")
-				nameVersion := strings.Split(lines[0], ": ")
-				name := nameVersion[0]
-				latestVersion := strings.Trim(nameVersion[1], " ")
-
-				// TODO 複数あったときにどうなるかまだ不明。わかったらちゃんと書く
-				localInstalledDirs := []string{}
-				for i := 2; ; i++ {
-					localInstalledDirs = append(localInstalledDirs, lines[i])
-					if strings.Contains(lines[i+1], "From: ") || strings.Contains(lines[i+1], "==>") {
-						break
-					}
-				}
-				localLatestInstalledDir := strings.Split(localInstalledDirs[len(localInstalledDirs)-1], " ")[0]
-				localLatestVersions := strings.Split(localLatestInstalledDir, "/")
-				localLatestVersion := strings.Trim(strings.Split(localLatestVersions[len(localLatestVersions)-1], " ")[0], " ")
-
-				retInfo <- Info{
-					Name:                    name,
-					LatestVersion:           latestVersion,
-					LocalInstalledDirs:      localInstalledDirs,
-					LocalLatestInstalledDir: localLatestInstalledDir,
-					LocalLatestVersion:      localLatestVersion,
-				}
-				wg.Done()
-			}
-		}()
+	err = runCmdStr("brew upgrade")
+	if err != nil {
+		logger.Fatal(err.Error())
 	}
-	for i, r := range caskListArr {
-		_ = i
-		if r == "\n" {
-			return
-		}
-		wg.Add(1)
-		ch <- r
+	err = runCmdStr("brew cleanup")
+	if err != nil {
+		logger.Fatal(err.Error())
 	}
-
-	wg.Wait()
-
-	retInfos := []Info{}
-	i := 0
-	for i < len(retInfo) {
-		ret, ok := <-retInfo
-		_ = ok
-		retInfos = append(retInfos, ret)
-		// logger.Println(ret)
-		if ret.LocalLatestVersion == "latest" {
-			//logger.Println("latest!")
-			// force installしたほうがいいかは相談かな。
-			continue
-		}
-		// 不完全なsemantic versioning
-		localLatestVersion := ret.LocalLatestVersion
-		localVer, err := semver.Make(localLatestVersion)
-		localForth := 0
-		if localVer.String() == "0.0.0" {
-			dotNum := strings.Count(localLatestVersion, ".")
-			if dotNum == 0 {
-				localLatestVersion += ".0.0"
-			} else if dotNum == 1 {
-				localLatestVersion += ".0"
-			}
-			if strings.Count(localLatestVersion, ",") > 0 {
-				localLatestVersion = strings.Split(localLatestVersion, ",")[0]
-			}
-			if strings.Count(localLatestVersion, "-") > 0 {
-				localLatestVersion = strings.Split(localLatestVersion, "-")[0]
-			}
-			if strings.Count(localLatestVersion, "_") > 0 {
-				localLatestVersion = strings.Split(localLatestVersion, "_")[0]
-			}
-
-			//logger.Printf("%s\n ", localLatestVersion)
-			localLatestVersions := strings.Split(localLatestVersion, ".")
-			for i, r := range localLatestVersions {
-				_ = i
-				a, b := strconv.ParseInt(r, 10, 0)
-				_ = b
-				localLatestVersions[i] = strconv.FormatInt(a, 10)
-			}
-
-			if len(localLatestVersions) == 4 {
-				a, b := strconv.Atoi(localLatestVersions[3])
-				localLatestVersions = localLatestVersions[0:3]
-				_ = b
-				localForth = a
-			}
-
-			localLatestVersion = strings.Join(localLatestVersions, ".")
-			localVer, err = semver.Make(localLatestVersion)
-		}
-		_ = err
-		latestForth := 0
-		latestVersion := ret.LatestVersion
-		latestVer, err := semver.Make(latestVersion)
-		if latestVer.String() == "0.0.0" {
-			dotNum := strings.Count(latestVersion, ".")
-			if dotNum == 0 {
-				latestVersion += ".0.0"
-			} else if dotNum == 1 {
-				latestVersion += ".0"
-			}
-			if strings.Count(latestVersion, ",") > 0 {
-				latestVersion = strings.Split(latestVersion, ",")[0]
-			}
-			if strings.Count(latestVersion, "-") > 0 {
-				latestVersion = strings.Split(latestVersion, "-")[0]
-			}
-			if strings.Count(latestVersion, "_") > 0 {
-				latestVersion = strings.Split(latestVersion, "_")[0]
-			}
-			latestVersions := strings.Split(latestVersion, ".")
-			for i, r := range latestVersions {
-				_ = i
-				a, b := strconv.ParseInt(r, 10, 0)
-				_ = b
-				latestVersions[i] = strconv.FormatInt(a, 10)
-			}
-
-			if len(latestVersions) == 4 {
-				latestForth, _ = strconv.Atoi(latestVersions[3])
-				latestVersions = latestVersions[0:3]
-			}
-
-			latestVersion = strings.Join(latestVersions, ".")
-			latestVer, err = semver.Make(latestVersion)
-		}
-
-		_ = err
-		if latestVer.String() == "0.0.0" {
-			logger.Println(ret.Name + ":" + ret.LatestVersion)
-			continue
-		}
-		//logger.Printf("%s : %s\n ", localVer.String(), latestVer.String())
-		//logger.Printf("%s : %s\n ", ret.LocalLatestVersion, ret.LatestVersion)
-		if localVer.LT(latestVer) {
-			logger.Println("less!")
-			out, err = exec.Command("brew", "cask", "install", ret.Name, "--force").Output()
-			logger.Printf("%s\n", out)
-		} else if localVer.EQ(latestVer) {
-			if localForth < latestForth {
-				logger.Println("less2!")
-				out, err = exec.Command("brew", "cask", "install", ret.Name, "--force").Output()
-				logger.Printf("%s\n", out)
-			}
-		}
-
+	err = runCmdStr("brew cask outdated")
+	if err != nil {
+		logger.Fatal(err.Error())
 	}
-	close(retInfo)
-	close(ch)
-
-	out, err = exec.Command("brew", "cask", "cleanup").Output()
-	_ = err
-	logger.Printf("%s\n", out)
-
-	return
+	err = runCmdStr("brew cask upgrade")
+	if err != nil {
+		logger.Fatal(err.Error())
+	}
+	err = runCmdStr("brew cask cleanup")
+	if err != nil {
+		logger.Fatal(err.Error())
+	}
+	logger.Println("=== FINISH brew cask upgrade task ===")
 }
