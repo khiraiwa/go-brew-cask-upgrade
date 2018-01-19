@@ -165,8 +165,8 @@ func main() {
 			}
 
 			if len(localLatestVersions) == 4 {
-				localLatestVersions = localLatestVersions[0:2]
 				a, b := strconv.Atoi(localLatestVersions[3])
+				localLatestVersions = localLatestVersions[0:3]
 				_ = b
 				localForth = a
 			}
@@ -203,8 +203,8 @@ func main() {
 			}
 
 			if len(latestVersions) == 4 {
-				latestVersions = latestVersions[0:2]
 				latestForth, _ = strconv.Atoi(latestVersions[3])
+				latestVersions = latestVersions[0:3]
 			}
 
 			latestVersion = strings.Join(latestVersions, ".")
